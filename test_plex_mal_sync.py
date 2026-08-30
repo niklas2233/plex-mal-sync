@@ -69,6 +69,8 @@ assert episode_count_compatible(13, 13) is True   # exact single-season match
 assert episode_count_compatible(0, 26) is True    # candidate's own count unknown - can't rule out
 assert episode_count_compatible(13, 0) is True    # Plex total unknown - can't rule out
 assert episode_count_compatible(20, 13) is False  # candidate has MORE episodes than Plex reports
+assert episode_count_compatible(1, 1201) is False  # a movie's "1 episode" isn't a season/cour signal
+assert episode_count_compatible(1, 1) is True      # exact single-episode match still valid
 
 # Genuine title tie (identical alt-title string, differ only in id/episode count) - without a
 # Plex total, whichever candidate comes first wins, since there's nothing else to break the tie.
@@ -85,5 +87,19 @@ assert match["id"] == 902  # no episode info to disambiguate -> first-listed tie
 # resolves to the actually-correct season instead of whichever happened to come first.
 match, ratio = best_match("Same Show Name", tied_seasons, total_episodes=26)
 assert match["id"] == 901
+
+# Real-world regression: a long-running, ongoing series (e.g. 1000+ episodes, no seasons at
+# all) can still tie 1.0-to-1.0 against its own movie spinoff's alternate title (movies are
+# often (re)titled identically to the main show in their native-language title) - the movie's
+# 1 episode must NOT be treated as a valid "divides evenly" match against the huge episode
+# count, or it wrongly wins the tie by list order alone.
+ongoing_show_candidates = [
+    {"id": 501, "title": "Ongoing Show: The Movie", "num_episodes": 1,
+     "alternative_titles": {"en": "Ongoing Show: The Movie", "ja": "ONGOING SHOW", "synonyms": []}},
+    {"id": 500, "title": "Ongoing Show", "num_episodes": 0,
+     "alternative_titles": {"en": "Ongoing Show", "ja": "ONGOING SHOW", "synonyms": []}},
+]
+match, ratio = best_match("Ongoing Show", ongoing_show_candidates, total_episodes=1201)
+assert match["id"] == 500
 
 print("ok")

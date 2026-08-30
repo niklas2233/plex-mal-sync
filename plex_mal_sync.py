@@ -77,11 +77,17 @@ def episode_count_compatible(num_episodes, total_episodes):
     """True if a candidate's own episode count could plausibly correspond to Plex's reported
     total: an exact single-season match, or an even divisor for a Plex-merged multi-season show
     (e.g. a 13-episode season legitimately divides a 26-episode merged total; a 12-episode one
-    doesn't). Either side being unknown (0, or still-airing on MAL) can't be ruled out."""
+    doesn't). Either side being unknown (0, or still-airing on MAL) can't be ruled out.
+    A 1-episode candidate (movie/special) is excluded from the divisor case - "anything % 1 == 0"
+    is mathematically true but not a meaningful signal, and would wrongly out-compete an ongoing
+    TV series entry (0/unknown episodes) that happens to tie on title (e.g. a movie's alternate
+    Japanese title matching the main series' title exactly)."""
     if not num_episodes or not total_episodes:
         return True
     if num_episodes >= total_episodes:
         return num_episodes == total_episodes
+    if num_episodes <= 1:
+        return False
     return total_episodes % num_episodes == 0
 
 
