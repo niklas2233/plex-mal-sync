@@ -13,11 +13,20 @@ A small self-hosted web app that syncs watched anime from a Plex server to MyAni
 
 1. Register an API app at [myanimelist.net/apiconfig](https://myanimelist.net/apiconfig).
    App type can be "other". You'll fill in the redirect URL after the app is running (step 3).
-2. Run it:
+2. Run it — with Docker Compose:
    ```
    docker compose up -d --build
    ```
-   The app listens on port 5057. Config (API tokens, cached matches) is stored in
+   or with plain `docker run` (build the image first):
+   ```
+   docker build -t plex-mal-sync .
+   docker run -d --name plex-mal-sync \
+     -p 5057:5057 \
+     -v "$(pwd)/plex_mal_sync_data:/data" \
+     --restart unless-stopped \
+     plex-mal-sync
+   ```
+   Either way, the app listens on port 5057. Config (API tokens, cached matches) is stored in
    `./plex_mal_sync_data/config.json` on the host, bind-mounted into the container.
 3. Open `http://<your-host>:5057`, fill in your Plex server URL/token and your MAL Client ID
    (+ secret if your app has one). The page shows the exact redirect URL to paste back into
