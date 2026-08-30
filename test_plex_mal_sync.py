@@ -1,4 +1,4 @@
-from plex_mal_sync import compute_status, best_match, sort_results, clamp_episodes, plan_update, match_parts, add_match_part
+from plex_mal_sync import compute_status, best_match, sort_results, clamp_episodes, plan_update, match_parts, add_match_part, episode_count_compatible
 
 assert compute_status(0, 0) == (None, 0)
 assert compute_status(12, 0) == (None, 0)
@@ -61,5 +61,29 @@ assert match_parts(cfg, "Never Matched") == []
 add_match_part(cfg, "Split Show", 100, 0)
 add_match_part(cfg, "Split Show", 200, 20)
 assert match_parts(cfg, "Split Show") == [{"id": 100, "offset": 0}, {"id": 200, "offset": 20}]
+
+# episode_count_compatible: exact match, valid divisor of a Plex-merged total, or unknown side
+assert episode_count_compatible(13, 26) is True   # 13-episode season divides a 26-ep merged show
+assert episode_count_compatible(12, 26) is False  # 12 doesn't evenly divide 26 - wrong season
+assert episode_count_compatible(13, 13) is True   # exact single-season match
+assert episode_count_compatible(0, 26) is True    # candidate's own count unknown - can't rule out
+assert episode_count_compatible(13, 0) is True    # Plex total unknown - can't rule out
+assert episode_count_compatible(20, 13) is False  # candidate has MORE episodes than Plex reports
+
+# Genuine title tie (identical alt-title string, differ only in id/episode count) - without a
+# Plex total, whichever candidate comes first wins, since there's nothing else to break the tie.
+tied_seasons = [
+    {"id": 902, "title": "Season 2 Romaji Title", "num_episodes": 12,
+     "alternative_titles": {"en": "Same Show Name", "synonyms": []}},
+    {"id": 901, "title": "Season 1 Romaji Title", "num_episodes": 13,
+     "alternative_titles": {"en": "Same Show Name", "synonyms": []}},
+]
+match, ratio = best_match("Same Show Name", tied_seasons)
+assert match["id"] == 902  # no episode info to disambiguate -> first-listed tie wins
+
+# With the Plex total known (26, matching season 1's 13-episode divisor), the SAME tie now
+# resolves to the actually-correct season instead of whichever happened to come first.
+match, ratio = best_match("Same Show Name", tied_seasons, total_episodes=26)
+assert match["id"] == 901
 
 print("ok")

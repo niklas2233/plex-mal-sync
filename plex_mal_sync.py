@@ -73,14 +73,37 @@ def candidate_names(c):
     return names
 
 
-def best_match(title, candidates):
-    """candidates: list of {"id":..,"title":..,"alternative_titles":..}. Returns (candidate, ratio) or (None, 0)."""
-    best, best_ratio = None, 0.0
+def episode_count_compatible(num_episodes, total_episodes):
+    """True if a candidate's own episode count could plausibly correspond to Plex's reported
+    total: an exact single-season match, or an even divisor for a Plex-merged multi-season show
+    (e.g. a 13-episode season legitimately divides a 26-episode merged total; a 12-episode one
+    doesn't). Either side being unknown (0, or still-airing on MAL) can't be ruled out."""
+    if not num_episodes or not total_episodes:
+        return True
+    if num_episodes >= total_episodes:
+        return num_episodes == total_episodes
+    return total_episodes % num_episodes == 0
+
+
+def best_match(title, candidates, total_episodes=0):
+    """candidates: list of {"id":..,"title":..,"alternative_titles":..,"num_episodes":..}.
+    Returns (candidate, ratio) or (None, 0). total_episodes (Plex's leaf_count for the show, if
+    known) breaks ties among near-identical titles - e.g. a show's two seasons ("X" vs "X S")
+    can score almost the same string-similarity, but only one has an episode count that's
+    actually compatible with what Plex reports having watched."""
     t = title.lower()
+    scored = []
     for c in candidates:
         ratio = max(difflib.SequenceMatcher(None, t, name.lower()).ratio() for name in candidate_names(c))
-        if ratio > best_ratio:
-            best, best_ratio = c, ratio
+        scored.append((ratio, c))
+    if not scored:
+        return None, 0.0
+    scored.sort(key=lambda x: -x[0])
+    top_ratio = scored[0][0]
+    TIE_MARGIN = 0.05
+    tied = [(r, c) for r, c in scored if top_ratio - r <= TIE_MARGIN]
+    eligible = [(r, c) for r, c in tied if episode_count_compatible(c.get("num_episodes", 0), total_episodes)]
+    best_ratio, best = (eligible or tied)[0]
     return best, best_ratio
 
 
@@ -529,7 +552,7 @@ def run_sync(cfg):
                     continue
 
                 candidates = mal_search(cfg, show["title"])
-                match, ratio = best_match(show["title"], candidates)
+                match, ratio = best_match(show["title"], candidates, total_episodes=show["leaf_count"])
                 if not match or ratio < MATCH_THRESHOLD:
                     log.info("skip %r: no confident MAL match (best=%r ratio=%.2f)",
                               show["title"], match["title"] if match else None, ratio)
