@@ -1,0 +1,4 @@
+plex_mal_sync_data/
+plex_mal_sync_config.json
+__pycache__/
+*.pyc

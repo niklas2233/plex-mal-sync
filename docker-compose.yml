@@ -1,0 +1,9 @@
+services:
+  plex-mal-sync:
+    build: .
+    container_name: plex-mal-sync
+    ports:
+      - "5057:5057"
+    volumes:
+      - ./plex_mal_sync_data:/data
+    restart: unless-stopped
