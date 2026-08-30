@@ -210,14 +210,19 @@ def clamp_episodes(episodes, total):
 
 
 def plan_update(cfg, current_list, mal_id, status, episodes, total_hint=0):
-    """Return (send_episodes, already_up_to_date) for a target MAL entry."""
+    """Return (send_status, send_episodes, already_up_to_date) for a target MAL entry.
+    Plex may report progress against a merged, multi-cour view (e.g. 20/49 episodes) while
+    the matched MAL entry only covers part of that (e.g. 20 total) - once clamped, if all of
+    that entry's own episodes are watched it's "completed" on MAL, regardless of what the
+    wider Plex-side total says."""
     entry = current_list.get(mal_id)
     if entry is None:
         entry = mal_single_status(cfg, mal_id)
     total = (entry[2] if entry else 0) or total_hint
     send_episodes = clamp_episodes(episodes, total)
-    already = entry is not None and entry[0] == status and entry[1] == send_episodes
-    return send_episodes, already
+    send_status = "completed" if total and send_episodes >= total else status
+    already = entry is not None and entry[0] == send_status and entry[1] == send_episodes
+    return send_status, send_episodes, already
 
 
 def mal_search(cfg, title):
@@ -466,17 +471,17 @@ def run_sync(cfg):
 
                 cached_id = cfg["mal_matches"].get(show["title"])
                 if cached_id:
-                    send_episodes, already = plan_update(cfg, current_list, cached_id, status, episodes)
+                    send_status, send_episodes, already = plan_update(cfg, current_list, cached_id, status, episodes)
                     if already:
                         log.info("skip %r: MAL id %s already up to date", show["title"], cached_id)
                         results.append({"plex_title": show["title"], "mal_title": f"MAL id {cached_id} (cached)",
                                         "note": "already up to date, no change sent", "css": "ok"})
                         continue
-                    mal_update(cfg, cached_id, status, send_episodes)
+                    mal_update(cfg, cached_id, send_status, send_episodes)
                     log.info("synced %r -> MAL id %s (cached): %s (%d ep)",
-                              show["title"], cached_id, status, send_episodes)
+                              show["title"], cached_id, send_status, send_episodes)
                     results.append({"plex_title": show["title"], "mal_title": f"MAL id {cached_id} (cached)",
-                                    "note": f"set {status} ({send_episodes} ep)", "css": "ok"})
+                                    "note": f"set {send_status} ({send_episodes} ep)", "css": "ok"})
                     continue
 
                 candidates = mal_search(cfg, show["title"])
@@ -489,17 +494,17 @@ def run_sync(cfg):
                     continue
                 cfg["mal_matches"][show["title"]] = match["id"]
                 save_config(cfg)
-                send_episodes, already = plan_update(cfg, current_list, match["id"], status, episodes,
-                                                     total_hint=match.get("num_episodes", 0))
+                send_status, send_episodes, already = plan_update(cfg, current_list, match["id"], status, episodes,
+                                                                   total_hint=match.get("num_episodes", 0))
                 if already:
                     log.info("matched %r -> MAL %r: already up to date", show["title"], match["title"])
                     results.append({"plex_title": show["title"], "mal_title": match["title"],
                                     "note": "already up to date, no change sent", "css": "ok"})
                     continue
-                mal_update(cfg, match["id"], status, send_episodes)
-                log.info("synced %r -> MAL %r: %s (%d ep)", show["title"], match["title"], status, send_episodes)
+                mal_update(cfg, match["id"], send_status, send_episodes)
+                log.info("synced %r -> MAL %r: %s (%d ep)", show["title"], match["title"], send_status, send_episodes)
                 results.append({"plex_title": show["title"], "mal_title": match["title"],
-                                "note": f"set {status} ({send_episodes} ep)", "css": "ok"})
+                                "note": f"set {send_status} ({send_episodes} ep)", "css": "ok"})
             except requests.RequestException as e:
                 log.error("error on %r: %s", show["title"], e)
                 results.append({"plex_title": show["title"], "mal_title": None,

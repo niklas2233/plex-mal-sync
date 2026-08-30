@@ -38,10 +38,17 @@ assert clamp_episodes(24, 24) == 24
 assert clamp_episodes(5, 0) == 5  # total unknown (e.g. still airing) - don't clamp
 
 current = {111: ("completed", 11, 11), 222: ("watching", 3, 12)}
-send, already = plan_update(None, current, 111, "completed", 26)
-assert send == 11 and already is True  # matches MAL's own clamped value -> no write needed
+send_status, send_episodes, already = plan_update(None, current, 111, "completed", 26)
+assert send_status == "completed" and send_episodes == 11 and already is True  # already matches -> no write
 
-send, already = plan_update(None, current, 222, "completed", 12)
-assert send == 12 and already is False  # status differs -> needs a write
+send_status, send_episodes, already = plan_update(None, current, 222, "completed", 12)
+assert send_status == "completed" and send_episodes == 12 and already is False  # status differs -> needs a write
+
+# Plex's merged view says "watching" (20/49 across both cours of a split show), but the matched
+# entry only has 20 episodes total - fully watching THIS entry means "completed" on MAL, not
+# "watching", regardless of what the wider Plex-side total implies.
+current = {333: ("watching", 20, 20)}
+send_status, send_episodes, already = plan_update(None, current, 333, "watching", 20)
+assert send_status == "completed" and send_episodes == 20 and already is False
 
 print("ok")
