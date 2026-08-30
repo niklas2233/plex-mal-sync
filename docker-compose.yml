@@ -1,6 +1,6 @@
 services:
   plex-mal-sync:
-    build: .
+    image: ghcr.io/niklas2233/plex-mal-sync:latest
     container_name: plex-mal-sync
     ports:
       - "5057:5057"
