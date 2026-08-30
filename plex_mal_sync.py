@@ -225,6 +225,36 @@ def plan_update(cfg, current_list, mal_id, status, episodes, total_hint=0):
     return send_status, send_episodes, already
 
 
+def match_parts(cfg, title):
+    """Plex can merge a multi-cour show (e.g. two seasons) into one title with more episodes
+    than any single MAL entry has. mal_matches[title] is normally a plain MAL id (offset 0,
+    the old/common case), or a list of {"id", "offset"} parts for shows that need a second
+    (sequel) MAL entry once the viewer gets past the first part's episode count."""
+    raw = cfg.get("mal_matches", {}).get(title)
+    if raw is None:
+        return []
+    if isinstance(raw, int):
+        return [{"id": raw, "offset": 0}]
+    return raw
+
+
+def add_match_part(cfg, title, mal_id, offset):
+    matches = cfg.setdefault("mal_matches", {})
+    parts = match_parts(cfg, title)
+    parts.append({"id": mal_id, "offset": offset})
+    matches[title] = parts
+
+
+def next_match_offset(cfg, title):
+    """Sum of the real episode totals of every part already tracked for this title -
+    where a newly-added sequel part's episodes start counting from, in Plex's merged count."""
+    offset = 0
+    for part in match_parts(cfg, title):
+        info = mal_single_status(cfg, part["id"])
+        offset += (info[2] if info else 0)
+    return offset
+
+
 def mal_search(cfg, title):
     # MAL's search hard-rejects q over 64 chars (400 invalid_q) - there's no other title-based
     # lookup endpoint, so this is unavoidable. best_match() still compares against the full,
@@ -340,6 +370,12 @@ Redirect URL (paste exactly into the MAL app's "App Redirect URL" field):
 <input type=text name=mal_ref placeholder="MAL id or link" required style="width:auto;flex:1;margin:0;padding:4px">
 <button type=submit style="padding:4px 8px">Add</button>
 <button type=submit formaction="/ignore" formnovalidate style="padding:4px 8px">Ignore</button>
+</form>
+{% elif r.css == 'ok' %}
+<form method=post action="/resolve" style="display:flex;gap:4px;margin-top:6px;font-size:0.85em">
+<input type=hidden name=plex_title value="{{ r.plex_title }}">
+<input type=text name=mal_ref placeholder="sequel MAL id/link (if Plex merges seasons)" style="width:auto;flex:1;margin:0;padding:3px">
+<button type=submit style="padding:2px 8px">+ part</button>
 </form>
 {% endif %}
 </td></tr>
@@ -469,19 +505,27 @@ def run_sync(cfg):
                     log.info("skip %r: ignored by user", show["title"])
                     continue
 
-                cached_id = cfg["mal_matches"].get(show["title"])
-                if cached_id:
-                    send_status, send_episodes, already = plan_update(cfg, current_list, cached_id, status, episodes)
-                    if already:
-                        log.info("skip %r: MAL id %s already up to date", show["title"], cached_id)
-                        results.append({"plex_title": show["title"], "mal_title": f"MAL id {cached_id} (cached)",
-                                        "note": "already up to date, no change sent", "css": "ok"})
-                        continue
-                    mal_update(cfg, cached_id, send_status, send_episodes)
-                    log.info("synced %r -> MAL id %s (cached): %s (%d ep)",
-                              show["title"], cached_id, send_status, send_episodes)
-                    results.append({"plex_title": show["title"], "mal_title": f"MAL id {cached_id} (cached)",
-                                    "note": f"set {send_status} ({send_episodes} ep)", "css": "ok"})
+                parts = match_parts(cfg, show["title"])
+                if parts:
+                    part_notes = []
+                    for part in parts:
+                        local_episodes = max(0, episodes - part["offset"])
+                        if local_episodes == 0:
+                            continue  # this part not reached yet (still on an earlier part)
+                        send_status, send_episodes, already = plan_update(
+                            cfg, current_list, part["id"], status, local_episodes)
+                        if already:
+                            log.info("skip %r: MAL id %s already up to date", show["title"], part["id"])
+                            part_notes.append(f"MAL id {part['id']}: up to date")
+                            continue
+                        mal_update(cfg, part["id"], send_status, send_episodes)
+                        log.info("synced %r -> MAL id %s (cached): %s (%d ep)",
+                                  show["title"], part["id"], send_status, send_episodes)
+                        part_notes.append(f"MAL id {part['id']}: set {send_status} ({send_episodes} ep)")
+                    results.append({"plex_title": show["title"],
+                                    "mal_title": ", ".join(f"MAL id {p['id']}" for p in parts) + " (cached)",
+                                    "note": "; ".join(part_notes) if part_notes else "already up to date, no change sent",
+                                    "css": "ok"})
                     continue
 
                 candidates = mal_search(cfg, show["title"])
@@ -526,7 +570,9 @@ def run_sync(cfg):
 def resolve():
     cfg = load_config()
     plex_title = request.form["plex_title"]
-    mal_ref = request.form["mal_ref"].strip()
+    mal_ref = request.form.get("mal_ref", "").strip()
+    if not mal_ref:
+        return redirect("/")  # e.g. the optional "+ part" form submitted empty - no-op
     m = re.search(r"\d+", mal_ref)
     if not m:
         return render_page(error=f"Could not find a MAL id in {mal_ref!r} — paste the numeric id or the anime's MAL URL")
@@ -539,20 +585,35 @@ def resolve():
     if status is None:
         return render_page(error=f"{plex_title!r} has no watched episodes in Plex")
 
+    # If parts are already tracked for this title (e.g. a first cour already matched), this is
+    # a sequel/second part - its episode count starts where the prior parts' totals end.
+    existing_parts = match_parts(cfg, plex_title)
+    offset = next_match_offset(cfg, plex_title) if existing_parts else 0
+    local_episodes = max(0, episodes - offset)
+    if local_episodes == 0:
+        return render_page(error=f"Plex hasn't reached that far into {plex_title!r} yet "
+                                  f"(only {episodes} of {offset} episodes covered by earlier parts)")
+
+    info = mal_single_status(cfg, mal_id)
+    total = info[2] if info else 0
+    send_episodes = clamp_episodes(local_episodes, total)
+    send_status = "completed" if total and send_episodes >= total else status
+
     try:
-        mal_update(cfg, mal_id, status, episodes)
+        mal_update(cfg, mal_id, send_status, send_episodes)
     except requests.RequestException as e:
         return render_page(error=f"MAL update failed: {e}")
 
-    cfg.setdefault("mal_matches", {})[plex_title] = mal_id
+    add_match_part(cfg, plex_title, mal_id, offset)
     save_config(cfg)
-    log.info("manually resolved %r -> MAL id %s: %s (%d ep)", plex_title, mal_id, status, episodes)
+    log.info("manually resolved %r part (offset %d) -> MAL id %s: %s (%d ep)",
+              plex_title, offset, mal_id, send_status, send_episodes)
 
     if sync_state["results"]:
         for r in sync_state["results"]:
             if r["plex_title"] == plex_title:
                 r["mal_title"] = f"MAL id {mal_id} (manual)"
-                r["note"] = f"set {status} ({episodes} ep)"
+                r["note"] = f"set {send_status} ({send_episodes} ep)"
                 r["css"] = "ok"
         sort_results(sync_state["results"])
     return redirect("/")

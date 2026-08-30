@@ -1,4 +1,4 @@
-from plex_mal_sync import compute_status, best_match, sort_results, clamp_episodes, plan_update
+from plex_mal_sync import compute_status, best_match, sort_results, clamp_episodes, plan_update, match_parts, add_match_part
 
 assert compute_status(0, 0) == (None, 0)
 assert compute_status(12, 0) == (None, 0)
@@ -50,5 +50,16 @@ assert send_status == "completed" and send_episodes == 12 and already is False  
 current = {333: ("watching", 20, 20)}
 send_status, send_episodes, already = plan_update(None, current, 333, "watching", 20)
 assert send_status == "completed" and send_episodes == 20 and already is False
+
+# match_parts must transparently upgrade the old bare-int format (single MAL id, offset 0)
+cfg = {"mal_matches": {"Old Format Show": 42}}
+assert match_parts(cfg, "Old Format Show") == [{"id": 42, "offset": 0}]
+assert match_parts(cfg, "Never Matched") == []
+
+# Sequel parts (e.g. season 2 as a separate MAL entry Plex merges into one show) get appended,
+# each starting where the prior part's episode count ends.
+add_match_part(cfg, "Split Show", 100, 0)
+add_match_part(cfg, "Split Show", 200, 20)
+assert match_parts(cfg, "Split Show") == [{"id": 100, "offset": 0}, {"id": 200, "offset": 20}]
 
 print("ok")
