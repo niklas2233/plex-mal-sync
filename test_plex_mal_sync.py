@@ -1,4 +1,4 @@
-from plex_mal_sync import compute_status, best_match, sort_results, clamp_episodes, plan_update, match_parts, add_match_part, episode_count_compatible
+from plex_mal_sync import compute_status, best_match, sort_results, clamp_episodes, plan_update, match_parts, add_match_part, episode_count_compatible, non_special_episode_counts
 
 assert compute_status(0, 0) == (None, 0)
 assert compute_status(12, 0) == (None, 0)
@@ -101,5 +101,20 @@ ongoing_show_candidates = [
 ]
 match, ratio = best_match("Ongoing Show", ongoing_show_candidates, total_episodes=1201)
 assert match["id"] == 500
+
+# non_special_episode_counts: Plex's show-level aggregate includes Season 0 (Specials), which
+# has no consistent place in MAL's own numbering and shouldn't count toward a show's real total.
+seasons_with_specials = [
+    {"index": 0, "leafCount": 28, "viewedLeafCount": 28},  # Specials - excluded
+    {"index": 1, "leafCount": 25, "viewedLeafCount": 25},
+    {"index": 2, "leafCount": 24, "viewedLeafCount": 24},
+]
+leaf, viewed = non_special_episode_counts(seasons_with_specials, fallback_leaf=77, fallback_viewed=77)
+assert (leaf, viewed) == (49, 49)  # 25+24, specials' 28 excluded
+
+# A show with no season breakdown at all (or every season oddly tagged 0) falls back to the
+# show-level aggregate, rather than silently reporting zero episodes.
+leaf, viewed = non_special_episode_counts([], fallback_leaf=12, fallback_viewed=12)
+assert (leaf, viewed) == (12, 12)
 
 print("ok")

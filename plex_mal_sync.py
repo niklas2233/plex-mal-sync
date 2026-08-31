@@ -132,9 +132,25 @@ def plex_list_show_sections(cfg):
     return [{"key": d["key"], "title": d["title"]} for d in dirs if d.get("type") == "show"]
 
 
+def non_special_episode_counts(seasons, fallback_leaf, fallback_viewed):
+    """Sum leaf/viewed episode counts across all seasons except Season 0 (Specials) - Plex's
+    show-level aggregate includes specials, which have no consistent place in MAL's own episode
+    numbering and would otherwise inflate a show's total past what any real season/movie covers.
+    Falls back to the show-level aggregate if a show has no season breakdown at all (index never
+    0, e.g. a single flat "season") or every season is oddly tagged as index 0, so a real show
+    never silently reports zero episodes."""
+    non_special = [se for se in seasons if se.get("index", 0) != 0]
+    if not non_special:
+        return fallback_leaf, fallback_viewed
+    leaf = sum(se.get("leafCount", 0) for se in non_special)
+    viewed = sum(se.get("viewedLeafCount", 0) for se in non_special)
+    return leaf, viewed
+
+
 def plex_watched_shows(cfg):
     """Yield {"title", "leaf_count", "viewed_leaf_count"} for shows in the selected libraries
-    (or every TV library if none were picked)."""
+    (or every TV library if none were picked). Specials (Season 0) are excluded - see
+    non_special_episode_counts()."""
     keys = cfg.get("plex_library_keys") or None
     sections = plex_get(cfg, "/library/sections").get("Directory", [])
     for section in sections:
@@ -144,10 +160,13 @@ def plex_watched_shows(cfg):
             continue
         shows = plex_get(cfg, f"/library/sections/{section['key']}/all").get("Metadata", [])
         for s in shows:
+            seasons = plex_get(cfg, f"/library/metadata/{s['ratingKey']}/children").get("Metadata", [])
+            leaf_count, viewed_leaf_count = non_special_episode_counts(
+                seasons, s.get("leafCount", 0), s.get("viewedLeafCount", 0))
             yield {
                 "title": s["title"],
-                "leaf_count": s.get("leafCount", 0),
-                "viewed_leaf_count": s.get("viewedLeafCount", 0),
+                "leaf_count": leaf_count,
+                "viewed_leaf_count": viewed_leaf_count,
             }
 
 
