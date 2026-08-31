@@ -24,6 +24,11 @@ CONFIG_PATH = os.environ.get(
 PORT = int(os.environ.get("PORT", 5057))
 MATCH_THRESHOLD = 0.5  # ponytail: plain difflib ratio, raise/replace with rapidfuzz if mismatches show up
 
+FRIBB_URL = "https://raw.githubusercontent.com/Fribb/anime-lists/master/anime-list-full.json"
+FRIBB_CACHE_PATH = os.environ.get(
+    "FRIBB_CACHE_PATH", os.path.join(os.path.dirname(CONFIG_PATH), "anime_lists_cache.json"))
+FRIBB_MAX_AGE = 7 * 24 * 3600  # community-maintained dataset, doesn't change hour to hour
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("plex_mal_sync")
 
@@ -148,9 +153,9 @@ def non_special_episode_counts(seasons, fallback_leaf, fallback_viewed):
 
 
 def plex_watched_shows(cfg):
-    """Yield {"title", "leaf_count", "viewed_leaf_count"} for shows in the selected libraries
-    (or every TV library if none were picked). Specials (Season 0) are excluded - see
-    non_special_episode_counts()."""
+    """Yield {"title", "leaf_count", "viewed_leaf_count", "rating_key"} for shows in the
+    selected libraries (or every TV library if none were picked). Specials (Season 0) are
+    excluded - see non_special_episode_counts()."""
     keys = cfg.get("plex_library_keys") or None
     sections = plex_get(cfg, "/library/sections").get("Directory", [])
     for section in sections:
@@ -167,7 +172,19 @@ def plex_watched_shows(cfg):
                 "title": s["title"],
                 "leaf_count": leaf_count,
                 "viewed_leaf_count": viewed_leaf_count,
+                "rating_key": s["ratingKey"],
             }
+
+
+def plex_show_tvdb_id(cfg, rating_key):
+    """Return a show's TheTVDB id per Plex's own metadata, or None if Plex has no TVDB match
+    for it (e.g. matched via a different agent, or an unmatched/local item)."""
+    detail = plex_get(cfg, f"/library/metadata/{rating_key}")
+    meta = (detail.get("Metadata") or [{}])[0]
+    for g in meta.get("Guid", []):
+        if g["id"].startswith("tvdb://"):
+            return int(g["id"].replace("tvdb://", ""))
+    return None
 
 
 # ---- MAL ----
@@ -248,6 +265,61 @@ def mal_single_status(cfg, anime_id):
     d = r.json()
     ls = d.get("my_list_status") or {}
     return (ls.get("status"), ls.get("num_episodes_watched", 0), d.get("num_episodes", 0))
+
+
+def load_fribb_index():
+    """Download (or reuse a cached copy of) Fribb/anime-lists' TheTVDB<->MAL cross-reference,
+    indexed by tvdb_id -> ordered list of {"mal_id","season","offset"} TV entries (movies/OVAs/
+    specials excluded - they don't have a season >= 1 or a consistent place in Plex's numbering).
+    Refetches only if the cache is missing or older than FRIBB_MAX_AGE, since this is a
+    community-maintained dataset that doesn't change hour to hour. Returns {} if the dataset is
+    unreachable and there's no existing cache to fall back to."""
+    stale = True
+    if os.path.exists(FRIBB_CACHE_PATH):
+        stale = (time.time() - os.path.getmtime(FRIBB_CACHE_PATH)) > FRIBB_MAX_AGE
+    if stale:
+        try:
+            r = requests.get(FRIBB_URL, timeout=60)
+            r.raise_for_status()
+            with open(FRIBB_CACHE_PATH, "w") as f:
+                f.write(r.text)
+            log.info("refreshed anime-lists cache from %s", FRIBB_URL)
+        except requests.RequestException as e:
+            log.warning("could not refresh anime-lists cache, using existing copy if any: %s", e)
+    if not os.path.exists(FRIBB_CACHE_PATH):
+        return {}
+    with open(FRIBB_CACHE_PATH) as f:
+        data = json.load(f)
+
+    index = {}
+    for entry in data:
+        tvdb_id, mal_id = entry.get("tvdb_id"), entry.get("mal_id")
+        if tvdb_id and mal_id and entry.get("type") == "TV":
+            index.setdefault(tvdb_id, []).append({
+                "mal_id": mal_id,
+                "season": (entry.get("season") or {}).get("tvdb") or 0,
+                "offset": (entry.get("episode_offset") or {}).get("tvdb") or 0,
+            })
+    for entries in index.values():
+        entries.sort(key=lambda e: (e["season"], e["offset"]))
+    return index
+
+
+def build_tvdb_chain(cfg, fribb_index, tvdb_id):
+    """Build a full multi-part match chain [{"id","offset"}] from Fribb's tvdb_id -> MAL
+    mapping, using each entry's own real MAL episode count to compute cumulative offsets.
+    Entries MAL doesn't have an episode count for yet (unreleased/still airing) are skipped -
+    they'd need manual "+ part" linking once real data exists. Returns [] if this tvdb_id isn't
+    in the dataset at all."""
+    chain, offset = [], 0
+    for entry in fribb_index.get(tvdb_id, []):
+        info = mal_single_status(cfg, entry["mal_id"])
+        eps = info[2] if info else 0
+        if eps <= 0:
+            continue
+        chain.append({"id": entry["mal_id"], "offset": offset})
+        offset += eps
+    return chain
 
 
 def clamp_episodes(episodes, total):
@@ -518,6 +590,31 @@ def mal_callback():
     return redirect("/")
 
 
+def sync_parts(cfg, current_list, title, status, episodes, parts, source_label):
+    """Walk a multi-part match chain, writing any part that's out of date. Returns the
+    results-table row dict for this show. Shared by the cached-match path and any freshly
+    resolved chain (anime-lists or title search), so both report/log consistently."""
+    part_notes = []
+    for part in parts:
+        local_episodes = max(0, episodes - part["offset"])
+        if local_episodes == 0:
+            continue  # this part not reached yet (still on an earlier part)
+        send_status, send_episodes, already = plan_update(cfg, current_list, part["id"], status, local_episodes)
+        if already:
+            log.info("skip %r: MAL id %s already up to date", title, part["id"])
+            part_notes.append(f"MAL id {part['id']}: up to date")
+            continue
+        mal_update(cfg, part["id"], send_status, send_episodes)
+        log.info("synced %r -> MAL id %s (%s): %s (%d ep)", title, part["id"], source_label, send_status, send_episodes)
+        part_notes.append(f"MAL id {part['id']}: set {send_status} ({send_episodes} ep)")
+    return {
+        "plex_title": title,
+        "mal_title": ", ".join(f"MAL id {p['id']}" for p in parts) + f" ({source_label})",
+        "note": "; ".join(part_notes) if part_notes else "already up to date, no change sent",
+        "css": "ok",
+    }
+
+
 def run_sync(cfg):
     results = []
     try:
@@ -540,6 +637,9 @@ def run_sync(cfg):
         log.warning("could not fetch current MAL list, will update everything unconditionally: %s", e)
         current_list = {}
 
+    fribb_index = load_fribb_index()
+    log.info("anime-lists cross-reference covers %d TheTVDB shows", len(fribb_index))
+
     log.info("sync started")
     try:
         for show in plex_watched_shows(cfg):
@@ -555,26 +655,24 @@ def run_sync(cfg):
 
                 parts = match_parts(cfg, show["title"])
                 if parts:
-                    part_notes = []
-                    for part in parts:
-                        local_episodes = max(0, episodes - part["offset"])
-                        if local_episodes == 0:
-                            continue  # this part not reached yet (still on an earlier part)
-                        send_status, send_episodes, already = plan_update(
-                            cfg, current_list, part["id"], status, local_episodes)
-                        if already:
-                            log.info("skip %r: MAL id %s already up to date", show["title"], part["id"])
-                            part_notes.append(f"MAL id {part['id']}: up to date")
-                            continue
-                        mal_update(cfg, part["id"], send_status, send_episodes)
-                        log.info("synced %r -> MAL id %s (cached): %s (%d ep)",
-                                  show["title"], part["id"], send_status, send_episodes)
-                        part_notes.append(f"MAL id {part['id']}: set {send_status} ({send_episodes} ep)")
-                    results.append({"plex_title": show["title"],
-                                    "mal_title": ", ".join(f"MAL id {p['id']}" for p in parts) + " (cached)",
-                                    "note": "; ".join(part_notes) if part_notes else "already up to date, no change sent",
-                                    "css": "ok"})
+                    results.append(sync_parts(cfg, current_list, show["title"], status, episodes, parts, "cached"))
                     continue
+
+                tvdb_id = None
+                try:
+                    tvdb_id = plex_show_tvdb_id(cfg, show["rating_key"])
+                except requests.RequestException as e:
+                    log.warning("could not fetch TheTVDB id for %r: %s", show["title"], e)
+                if tvdb_id:
+                    tvdb_chain = build_tvdb_chain(cfg, fribb_index, tvdb_id)
+                    if tvdb_chain:
+                        cfg["mal_matches"][show["title"]] = tvdb_chain
+                        save_config(cfg)
+                        log.info("matched %r via anime-lists (tvdb %s): %d part(s)",
+                                  show["title"], tvdb_id, len(tvdb_chain))
+                        results.append(sync_parts(cfg, current_list, show["title"], status, episodes,
+                                                   tvdb_chain, "anime-lists"))
+                        continue
 
                 candidates = mal_search(cfg, show["title"])
                 match, ratio = best_match(show["title"], candidates, total_episodes=show["leaf_count"])

@@ -5,9 +5,16 @@ A small self-hosted web app that syncs watched anime from a Plex server to MyAni
 - Log in with your Plex server URL and X-Plex-Token
 - Connect your MyAnimeList account via OAuth2 (PKCE)
 - Pick which Plex libraries to sync (defaults to every TV-type library)
-- Runs in the background, matches titles against MAL (including alternative/Japanese titles),
-  and only writes to MAL entries that actually changed
-- Unmatched shows can be resolved manually (paste a MAL id or link) or ignored permanently
+- Runs in the background, only writing to MAL entries that actually changed
+- Three-tier matching for a Plex show that isn't linked to a MAL entry yet:
+  1. **[Fribb/anime-lists](https://github.com/Fribb/anime-lists)** — cross-references Plex's own
+     TheTVDB id against a community-maintained TVDB↔MAL mapping, auto-building a full multi-season
+     match (e.g. a show Plex merges into one continuous run that MAL splits into separate season
+     entries) without ever guessing from titles. Downloaded once and cached for a week.
+  2. **Title search** — falls back to MAL's own search API (matching alternative/Japanese titles
+     too) when the show isn't in that dataset.
+  3. **Manual** — if neither finds a confident match, resolve it yourself in the web UI by pasting
+     a MAL id or link (or permanently ignore the show).
 
 ## Setup
 

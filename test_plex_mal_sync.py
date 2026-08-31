@@ -1,4 +1,5 @@
-from plex_mal_sync import compute_status, best_match, sort_results, clamp_episodes, plan_update, match_parts, add_match_part, episode_count_compatible, non_special_episode_counts
+import plex_mal_sync as m
+from plex_mal_sync import compute_status, best_match, sort_results, clamp_episodes, plan_update, match_parts, add_match_part, episode_count_compatible, non_special_episode_counts, build_tvdb_chain
 
 assert compute_status(0, 0) == (None, 0)
 assert compute_status(12, 0) == (None, 0)
@@ -116,5 +117,22 @@ assert (leaf, viewed) == (49, 49)  # 25+24, specials' 28 excluded
 # show-level aggregate, rather than silently reporting zero episodes.
 leaf, viewed = non_special_episode_counts([], fallback_leaf=12, fallback_viewed=12)
 assert (leaf, viewed) == (12, 12)
+
+# build_tvdb_chain: cumulative offsets come from each entry's own real MAL episode count, in
+# (season, within-season offset) order; entries with no real episode count yet (unreleased)
+# are skipped entirely rather than breaking the offset math for what comes after.
+fake_fribb_index = {
+    12345: [
+        {"mal_id": 111, "season": 1, "offset": 0},
+        {"mal_id": 222, "season": 2, "offset": 0},
+        {"mal_id": 333, "season": 3, "offset": 0},  # unreleased - no real episode count yet
+    ],
+}
+fake_info = {111: (None, 0, 25), 222: (None, 0, 24), 333: (None, 0, 0)}
+m.mal_single_status = lambda cfg, mal_id: fake_info.get(mal_id)
+chain = build_tvdb_chain(None, fake_fribb_index, 12345)
+assert chain == [{"id": 111, "offset": 0}, {"id": 222, "offset": 25}]
+
+assert build_tvdb_chain(None, fake_fribb_index, 99999) == []  # tvdb_id not in the dataset at all
 
 print("ok")
