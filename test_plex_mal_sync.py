@@ -52,6 +52,14 @@ current = {333: ("watching", 20, 20)}
 send_status, send_episodes, already = plan_update(None, current, 333, "watching", 20)
 assert send_status == "completed" and send_episodes == 20 and already is False
 
+# The reverse case: Plex says "completed" because the user watched everything Plex currently
+# HAS (e.g. 9/9, a still-airing show or one not fully added to the library yet), but this MAL
+# entry's own real total is higher (26) - must never claim "completed" just because Plex's own,
+# smaller, total was reached.
+current = {700: (None, 0, 26)}
+send_status, send_episodes, already = plan_update(None, current, 700, "completed", 9)
+assert send_status == "watching" and send_episodes == 9 and already is False
+
 # match_parts must transparently upgrade the old bare-int format (single MAL id, offset 0)
 cfg = {"mal_matches": {"Old Format Show": 42}}
 assert match_parts(cfg, "Old Format Show") == [{"id": 42, "offset": 0}]

@@ -334,13 +334,20 @@ def plan_update(cfg, current_list, mal_id, status, episodes, total_hint=0):
     Plex may report progress against a merged, multi-cour view (e.g. 20/49 episodes) while
     the matched MAL entry only covers part of that (e.g. 20 total) - once clamped, if all of
     that entry's own episodes are watched it's "completed" on MAL, regardless of what the
-    wider Plex-side total says."""
+    wider Plex-side total says.
+    The reverse also happens: Plex may report "completed" because the user has watched
+    everything Plex currently HAS (e.g. 9/9, a show still airing or not fully added yet), while
+    this MAL entry's own real total is higher (e.g. 26) - never claim "completed" on MAL just
+    because Plex's own, possibly-smaller, total was reached."""
     entry = current_list.get(mal_id)
     if entry is None:
         entry = mal_single_status(cfg, mal_id)
     total = (entry[2] if entry else 0) or total_hint
     send_episodes = clamp_episodes(episodes, total)
-    send_status = "completed" if total and send_episodes >= total else status
+    if total:
+        send_status = "completed" if send_episodes >= total else "watching"
+    else:
+        send_status = status
     already = entry is not None and entry[0] == send_status and entry[1] == send_episodes
     return send_status, send_episodes, already
 
