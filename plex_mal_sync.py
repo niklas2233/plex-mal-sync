@@ -27,7 +27,7 @@ MATCH_THRESHOLD = 0.5  # ponytail: plain difflib ratio, raise/replace with rapid
 FRIBB_URL = "https://raw.githubusercontent.com/Fribb/anime-lists/master/anime-list-full.json"
 FRIBB_CACHE_PATH = os.environ.get(
     "FRIBB_CACHE_PATH", os.path.join(os.path.dirname(CONFIG_PATH), "anime_lists_cache.json"))
-FRIBB_MAX_AGE = 7 * 24 * 3600  # community-maintained dataset, doesn't change hour to hour
+FRIBB_MAX_AGE = int(os.environ.get("FRIBB_MAX_AGE", 12 * 3600))  # refresh at most every 12h
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("plex_mal_sync")
