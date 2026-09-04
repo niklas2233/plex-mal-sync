@@ -267,10 +267,26 @@ def mal_single_status(cfg, anime_id):
     return (ls.get("status"), ls.get("num_episodes_watched", 0), d.get("num_episodes", 0))
 
 
+def fribb_entry_included(entry_type, season, offset):
+    """A TV entry is always included. A SPECIAL is included only if it's tagged with a real
+    season (>= 1) AND a nonzero within-season offset (e.g. "Final Chapters" continuing after a
+    season's main episodes, as with Attack on Titan) - that's a later part of a real season,
+    not standalone bonus content. Season 0 is Fribb's bucket for all specials/OVAs/movies
+    regardless of type, so a SPECIAL there can still carry its own nonzero "offset" (its
+    position among OTHER season-0 extras) without meaning anything about real episode numbering
+    - requiring season >= 1 too rules out exactly that false positive."""
+    return entry_type == "TV" or (entry_type == "SPECIAL" and season >= 1 and offset > 0)
+
+
 def load_fribb_index():
     """Download (or reuse a cached copy of) Fribb/anime-lists' TheTVDB<->MAL cross-reference,
-    indexed by tvdb_id -> ordered list of {"mal_id","season","offset"} TV entries (movies/OVAs/
-    specials excluded - they don't have a season >= 1 or a consistent place in Plex's numbering).
+    indexed by tvdb_id -> ordered list of {"mal_id","season","offset"} entries. Movies/OVAs/
+    specials are normally excluded (season 0, or no consistent place in Plex's numbering) -
+    with one narrow exception: a SPECIAL-type entry with a nonzero within-season offset (e.g.
+    "Final Chapters" continuing after a season's main episodes, as with Attack on Titan) is
+    genuinely a later part of that season, not standalone bonus content, so it's kept. A
+    SPECIAL at offset 0 is excluded like any other special - of ~43k entries in this dataset,
+    only one has ever matched this nonzero-offset pattern, so it's a safe, narrow signal.
     Refetches only if the cache is missing or older than FRIBB_MAX_AGE, since this is a
     community-maintained dataset that doesn't change hour to hour. Returns {} if the dataset is
     unreachable and there's no existing cache to fall back to."""
@@ -294,11 +310,13 @@ def load_fribb_index():
     index = {}
     for entry in data:
         tvdb_id, mal_id = entry.get("tvdb_id"), entry.get("mal_id")
-        if tvdb_id and mal_id and entry.get("type") == "TV":
+        season = (entry.get("season") or {}).get("tvdb") or 0
+        offset = (entry.get("episode_offset") or {}).get("tvdb") or 0
+        if tvdb_id and mal_id and fribb_entry_included(entry.get("type"), season, offset):
             index.setdefault(tvdb_id, []).append({
                 "mal_id": mal_id,
-                "season": (entry.get("season") or {}).get("tvdb") or 0,
-                "offset": (entry.get("episode_offset") or {}).get("tvdb") or 0,
+                "season": season,
+                "offset": offset,
             })
     for entries in index.values():
         entries.sort(key=lambda e: (e["season"], e["offset"]))

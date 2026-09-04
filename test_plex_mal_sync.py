@@ -1,5 +1,5 @@
 import plex_mal_sync as m
-from plex_mal_sync import compute_status, best_match, sort_results, clamp_episodes, plan_update, match_parts, add_match_part, episode_count_compatible, non_special_episode_counts, build_tvdb_chain
+from plex_mal_sync import compute_status, best_match, sort_results, clamp_episodes, plan_update, match_parts, add_match_part, episode_count_compatible, non_special_episode_counts, build_tvdb_chain, fribb_entry_included
 
 assert compute_status(0, 0) == (None, 0)
 assert compute_status(12, 0) == (None, 0)
@@ -149,5 +149,20 @@ assert build_tvdb_chain(None, fake_fribb_index, 99999) == []  # tvdb_id not in t
 fake_info_with_failure = {111: (None, 0, 25), 222: None, 333: (None, 0, 12)}
 m.mal_single_status = lambda cfg, mal_id: fake_info_with_failure.get(mal_id)
 assert build_tvdb_chain(None, fake_fribb_index, 12345) == []
+
+# fribb_entry_included: a TV entry is always kept. A SPECIAL is only kept when it has BOTH a
+# real season (>=1) AND a nonzero within-season offset (e.g. "Final Chapters" continuing after
+# a season's main episodes, as with Attack on Titan) - a SPECIAL at offset 0 (the vast majority)
+# is standalone bonus content.
+assert fribb_entry_included("TV", 1, 0) is True
+assert fribb_entry_included("TV", 4, 16) is True
+assert fribb_entry_included("SPECIAL", 4, 28) is True   # e.g. AoT's "Final Chapters"
+assert fribb_entry_included("SPECIAL", 1, 0) is False   # a standalone special, not a continuation
+# A season-0 special can still carry its own nonzero offset (its position among OTHER season-0
+# extras, e.g. SAO's "Extra Edition" recap) - that's not real episode numbering, so season >= 1
+# is required too, not just a nonzero offset.
+assert fribb_entry_included("SPECIAL", 0, 9) is False
+assert fribb_entry_included("OVA", 1, 5) is False
+assert fribb_entry_included("MOVIE", 0, 0) is False
 
 print("ok")
