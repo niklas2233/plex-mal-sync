@@ -143,4 +143,11 @@ assert chain == [{"id": 111, "offset": 0}, {"id": 222, "offset": 25}]
 
 assert build_tvdb_chain(None, fake_fribb_index, 99999) == []  # tvdb_id not in the dataset at all
 
+# A transient fetch failure (mal_single_status returns None) must abort the whole chain rather
+# than being silently treated like "unreleased" - skipping season 2 here would otherwise leave
+# season 3 with season 1's offset instead of season 1+2's, corrupting every entry after it.
+fake_info_with_failure = {111: (None, 0, 25), 222: None, 333: (None, 0, 12)}
+m.mal_single_status = lambda cfg, mal_id: fake_info_with_failure.get(mal_id)
+assert build_tvdb_chain(None, fake_fribb_index, 12345) == []
+
 print("ok")

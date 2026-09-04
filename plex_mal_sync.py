@@ -308,13 +308,21 @@ def load_fribb_index():
 def build_tvdb_chain(cfg, fribb_index, tvdb_id):
     """Build a full multi-part match chain [{"id","offset"}] from Fribb's tvdb_id -> MAL
     mapping, using each entry's own real MAL episode count to compute cumulative offsets.
-    Entries MAL doesn't have an episode count for yet (unreleased/still airing) are skipped -
-    they'd need manual "+ part" linking once real data exists. Returns [] if this tvdb_id isn't
-    in the dataset at all."""
+    Entries MAL genuinely has no episode count for yet (unreleased/still airing) are skipped -
+    they'd need manual "+ part" linking once real data exists.
+    A transient fetch failure (mal_single_status returns None after its own retries) is NOT
+    treated the same as "unreleased" - silently skipping it would leave every later entry's
+    offset short by that entry's episodes, corrupting the whole chain. Aborts and returns []
+    instead, so the show falls through to title matching for this run and gets a clean retry
+    (via this same path) on the next sync once MAL is responsive again."""
     chain, offset = [], 0
     for entry in fribb_index.get(tvdb_id, []):
         info = mal_single_status(cfg, entry["mal_id"])
-        eps = info[2] if info else 0
+        if info is None:
+            log.warning("aborting anime-lists chain for tvdb %s: could not fetch MAL id %s",
+                        tvdb_id, entry["mal_id"])
+            return []
+        eps = info[2]
         if eps <= 0:
             continue
         chain.append({"id": entry["mal_id"], "offset": offset})
